@@ -19,12 +19,17 @@ Difficulty: tricky
 
 ## Files to touch
 
-- `pyproject.toml`, `uv.lock` - NEW. Python 3.11+, `mcp`; dev `pytest`, `ruff`.
-- `src/second_brain_mcp/` - NEW. Package per the spec's module list.
-- `tests/` - NEW. `conftest.py` with the tmp_path vault fixture and the guard that fails the
-  session if the resolved root is not under tmp_path; tests per module.
+Scaffolding already exists and `uv run --frozen pytest -q` is green — extend it, do not
+recreate it. If you add a dependency, run `uv sync` so `uv.lock` stays current, or `--frozen`
+fails the whole test command.
+
+- `src/second_brain_mcp/` - exists with `__init__.py` only. Add the modules per the spec.
+- `tests/test_toolchain.py` - exists, 3 passing smoke tests. Keep them.
+- `tests/conftest.py` - NEW. tmp_path vault fixture, plus the guard that fails the session if
+  the resolved root is not under tmp_path.
 - `tests/fixtures/vault/` - NEW. Synthetic vault mirroring the real structure, including a
   symlink pointing outside it.
+- `tests/` - NEW test modules per package module.
 
 ## Tests to run
 
