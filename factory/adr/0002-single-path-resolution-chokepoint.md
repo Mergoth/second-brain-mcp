@@ -36,6 +36,21 @@ bypass flag, no trusted-path list, no follow-symlinks toggle, no allow-outside m
 ends of a two-path operation are resolved independently. No module in the package calls
 `open()`, `Path()`, or `os.*` on a value that originated in a tool argument.
 
+### Amendment 2026-08-16 (after round 1 of vault-primitives-stdio)
+
+"Caller-supplied path" was read too narrowly and it cost a round. `list_notes(glob)`,
+`search_vault(scope)` and `search_vault(query)` are not paths, so they were passed to
+`Path.glob()` and to `rg` without ever reaching `resolve()`. Two real defects followed:
+`root.glob('../**/*.md')` escaped the vault, and a `query` beginning with `-` was parsed by
+`rg` as a flag, so `--pre=<script>` achieved arbitrary command execution — proven by
+execution during review, with a model-controlled argument, against the exact prompt-injection
+threat this ADR exists to stop.
+
+The rule therefore covers **every caller-controlled string that reaches the filesystem or a
+subprocess**, not only arguments named like paths. Glob patterns and search scopes are
+validated (no `..`, no absolute, no leading `-`) before use, and any value passed to a
+subprocess goes after `-e` or `--` so it can never be read as an option.
+
 ## Consequences
 
 - Makes easy: one adversarial test table covers the whole attack surface, and adding a tool

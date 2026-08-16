@@ -9,6 +9,8 @@ Rules for whoever writes here:
 - keep under ~40 lines. when it grows past that, merge and cut.
 - conventions and commands do NOT go here - those belong in `context.md`.
 
+- green tests + every done criterion met still shipped an RCE (round 1, vault-primitives-stdio); grep-shaped criteria check spelling, so verify security claims by running the exploit
+- MCP SDK 2.0 removed `mcp.server.fastmcp`; the class is `MCPServer` from `mcp.server.mcpserver`
 - `uv` lives in `~/.local/bin`; if it is not on agy's PATH the round fails at the test step looking like a code failure
 - `pytest -q` exits 5 on empty collection, so a round with source but no tests reads as failed; always ship a test
 - the real vault has no git and no verified restore path - never point VAULT_PATH at it from a build run

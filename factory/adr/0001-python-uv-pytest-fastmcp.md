@@ -17,9 +17,13 @@ interpreter.
 
 ## Decision
 
-We use Python 3.11+ with the MCP Python SDK (FastMCP) for the server, `uv` for dependency
-and interpreter management, and pytest for tests. `TEST_CMD` is `uv run --frozen pytest -q`.
+We use Python 3.11+ with the MCP Python SDK for the server, `uv` for dependency and
+interpreter management, and pytest for tests. `TEST_CMD` is `uv run --frozen pytest -q`.
 `uv.lock` is committed.
+
+The server class is `MCPServer`, from `mcp.server.mcpserver`. This ADR originally said
+`FastMCP`; SDK 2.0 removed `mcp.server.fastmcp` entirely, verified 2026-08-16 by import
+against the pinned lock. `run(transport="stdio")` is unchanged.
 
 ## Consequences
 
