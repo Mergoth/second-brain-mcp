@@ -9,6 +9,7 @@ Rules for whoever writes here:
 - keep under ~40 lines. when it grows past that, merge and cut.
 - conventions and commands do NOT go here - those belong in `context.md`.
 
+- MCP dynamic client registration is DEPRECATED (Client ID Metadata Documents replace it); static bearer is accepted by Anthropic's MCP client surfaces, so phase 3 is likely a day not a week — but the claude.ai connector UI itself is still unverified
 - green tests + every done criterion met still shipped an RCE (round 1, vault-primitives-stdio); grep-shaped criteria check spelling, so verify security claims by running the exploit
 - MCP SDK 2.0 removed `mcp.server.fastmcp`; the class is `MCPServer` from `mcp.server.mcpserver`
 - `uv` lives in `~/.local/bin`; if it is not on agy's PATH the round fails at the test step looking like a code failure

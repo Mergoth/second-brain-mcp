@@ -8,9 +8,14 @@ from mcp.server.mcpserver import MCPServer
 from second_brain_mcp.tools import primitives
 
 
-def create_server() -> MCPServer:
-    """Create and return a configured MCPServer with all tools registered."""
-    mcp = MCPServer("second-brain-mcp")
+def create_server(**kwargs) -> MCPServer:
+    """Create and return a configured MCPServer with all tools registered.
+
+    Extra *kwargs* are forwarded to the MCPServer constructor so the
+    entrypoint can inject auth settings without server.py importing auth
+    types (ADR-0003).
+    """
+    mcp = MCPServer("second-brain-mcp", **kwargs)
 
     @mcp.tool()
     def list_notes(glob: str = "**/*.md", since: float | None = None) -> list[dict]:

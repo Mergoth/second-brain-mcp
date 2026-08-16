@@ -1,0 +1,18 @@
+services:
+  second-brain-mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - VAULT_PATH=/vault
+      - MCP_AUTH_TOKEN
+    volumes:
+      - type: bind
+        source: ${HOST_VAULT_PATH:?Set HOST_VAULT_PATH to the Obsidian vault directory}
+        target: /vault
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    restart: unless-stopped
