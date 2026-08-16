@@ -5,7 +5,7 @@ No transport selection here — that belongs in __main__.py (ADR-0003).
 
 from mcp.server.mcpserver import MCPServer
 
-from second_brain_mcp.tools import primitives
+from second_brain_mcp.tools import primitives, semantic
 
 
 def create_server(**kwargs) -> MCPServer:
@@ -42,5 +42,39 @@ def create_server(**kwargs) -> MCPServer:
     def move_note(from_path: str, to_path: str) -> str:
         """Move a note from one path to another. Both paths are relative to vault root."""
         return primitives.move_note(from_path, to_path)
+
+    @mcp.tool()
+    def capture_thought(text: str, source: str, domain: str | None = None) -> str:
+        """Capture a raw thought into raw/thoughts/ with frontmatter and tags."""
+        return semantic.capture_thought(text=text, source=source, domain=domain)
+
+    @mcp.tool()
+    def list_task_sections() -> list[str]:
+        """List current section headers (##) in Tasks.md live from the file."""
+        return semantic.list_task_sections()
+
+    @mcp.tool()
+    def add_task(
+        text: str,
+        section: str,
+        priority: str | None = None,
+        due: str | None = None,
+        link: str | None = None,
+    ) -> str:
+        """Add a task under an existing section in Tasks.md.
+        section is matched case-insensitively against live headers."""
+        return semantic.add_task(
+            text=text, section=section, priority=priority, due=due, link=link
+        )
+
+    @mcp.tool()
+    def get_tasks(filter: str | None = None) -> list[dict]:
+        """Get structured tasks parsed from Tasks.md with overdue flags."""
+        return semantic.get_tasks(filter=filter)
+
+    @mcp.tool()
+    def append_log(line: str) -> str:
+        """Append an entry to human meta/log.md."""
+        return semantic.append_log(line)
 
     return mcp

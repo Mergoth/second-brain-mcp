@@ -31,3 +31,16 @@ class ConfigError(VaultError):
 
 class SearchError(VaultError):
     """A search operation failed (e.g. rg not found, timeout)."""
+
+
+class InvalidDomainError(VaultError):
+    """A thought domain is not in the allowed closed list."""
+
+
+class TaskSectionNotFoundError(VaultError):
+    """A requested task section was not found in Tasks.md."""
+
+
+class TaskValidationError(VaultError):
+    """A task input parameter (e.g. priority, date, or filter) is invalid."""
+
