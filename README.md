@@ -11,8 +11,9 @@ Built so the vault's filing rules live in code rather than in a prompt that can 
 |---|---|
 | 1. Local, stdio, five primitives | **Done**, 119 tests |
 | 2. HTTP transport + bearer auth | **Done**, verified locally |
-| 2b. Container image | **Written but never built** — no Docker daemon on the dev machine |
-| 3. Expose via DDNS + reverse proxy | **Not started** — needs NAS access, see [Deployment](#deployment) |
+| 2b. Container image | **Done** — running on the NAS against a sandbox copy of the vault |
+| 3. Expose via DDNS + reverse proxy | **Done** — verified from the public URL |
+| 3b. OAuth for claude.ai connectors | **Done** — full flow verified from the public URL; not yet added in claude.ai |
 | 4. Semantic tools | **Done** |
 
 ## Quick start
@@ -59,12 +60,17 @@ header pointing at `/.well-known/oauth-protected-resource` (RFC 9728).
 
 ## Configuration
 
-All configuration is environment variables. None have defaults.
+All configuration is environment variables.
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `VAULT_PATH` | always | Absolute path to the vault root. Resolved and frozen at startup; never re-read. |
-| `MCP_AUTH_TOKEN` | `--transport http` | Static bearer token. Compared with `hmac.compare_digest`. |
+| `VAULT_PATH` | always | Absolute path to the vault root. Resolved and frozen at startup; never re-read. No default. |
+| `MCP_AUTH_TOKEN` | `--transport http` | Static bearer token. Compared with `hmac.compare_digest`. No default. |
+| `MCP_HOST` / `MCP_PORT` | `--transport http` | Bind address. Default `127.0.0.1:8000`; the image sets `0.0.0.0`. |
+| `MCP_RESOURCE_URL` | `--transport http` off loopback | The MCP URL exactly as clients enter it, `/mcp` included — claude.ai requires the metadata `resource` to match. Defaults to the bind address only on loopback; otherwise the server refuses to start without it. |
+| `MCP_ISSUER_URL` | optional | Authorization server URL. Defaults to the origin of `MCP_RESOURCE_URL`. |
+| `MCP_OWNER_PASSWORD` | optional | Turns on the owner OAuth server (claude.ai connectors). The passphrase for the sign-in page; at least 12 characters. |
+| `MCP_STATE_DIR` | with `MCP_OWNER_PASSWORD` | Writable directory for OAuth clients and token digests. Keep it outside the vault. |
 
 ## Tools
 
@@ -147,40 +153,85 @@ Design documents:
 
 ## Deployment
 
-Phase 3 is not done. What remains is NAS and browser work, not code:
+### Running on the NAS (BlackNAS / `mergoth`, DS220+, DSM 7.2.1)
 
-1. **Fix the advertised metadata URLs first — this is a blocker, not a nicety.**
-   `__main__.py` calls `build_auth_settings()` with no arguments, so it advertises the defaults
-   `resource_url="http://127.0.0.1:8000"` and `issuer_url="https://auth.example.com"`. Behind a
-   reverse proxy those are wrong: a remote client is told the resource lives on loopback. Make both
-   read from the environment (e.g. `MCP_RESOURCE_URL`, `MCP_ISSUER_URL`) before exposing anything.
-2. Build the container. `deploy/Dockerfile` and `deploy/compose.yaml` are written — non-root user,
-   read-only rootfs, `ripgrep` installed, port bound to `127.0.0.1` — but **have never been built
-   or run**.
-3. Resolve container UID vs. vault file ownership. `Tasks.md` and `meta/log.md` are mode `600` on
-   the real vault, so a non-root container with a mismatched UID gets `EACCES` on exactly the two
-   highest-value writes while reads of `raw/` keep working — a partial failure that looks like a
-   tool bug.
-4. DSM reverse proxy, Let's Encrypt cert, rate limit, auto-block on failed auth. Never publish the
-   container port directly.
-5. Register as a custom connector and test from Android.
+Layout on the NAS, under `/volume1/docker/second-brain-mcp/`:
+
+| Path | What |
+|---|---|
+| `app/` | `pyproject.toml`, `uv.lock`, `src/`, `deploy/` pushed from this repo |
+| `.env` | `VAULT_UID`, `VAULT_GID`, `HOST_VAULT_PATH`, `HOST_STATE_PATH`, `MCP_BIND`, `MCP_PUBLISH_PORT`, `MCP_RESOURCE_URL`, `MCP_AUTH_TOKEN`, `MCP_OWNER_PASSWORD`. Mode `600`. |
+| `state/` | `oauth-state.json`: registered clients and SHA-256 digests of tokens. Mode `700`. |
+| `vault-sandbox/` | `rsync -a` copy of `/volume1/homes/vlad/Notes/PersonalObsidian` — what the container mounts today |
+
+The vault is owned `1026:100`, so the image is built with `UID=1026 GID=100` (compose passes
+`VAULT_UID`/`VAULT_GID` as build args). Hardening: read-only rootfs, `cap_drop: ALL`,
+`no-new-privileges`, non-root.
+
+Public endpoint: `https://brain.mergoth.synology.me:1986/mcp`.
+
+```
+client → router :1986 → NAS :443 (DSM reverse proxy, TLS, HSTS, read timeout 86400)
+       → http://localhost:8765 → container :8000
+```
+
+The container publishes on `127.0.0.1:8765` only (`MCP_BIND=127.0.0.1`), so the proxy is the one
+way in. `MCP_RESOURCE_URL=https://brain.mergoth.synology.me:1986/mcp` — the external port must be
+in it, because the router, not the proxy, maps 1986→443. The certificate is the existing Let's Encrypt
+wildcard for `*.mergoth.synology.me`. Do not add a router forward for 8765.
+
+Deploy an update from this repo (DSM intercepts a bare `rsync` over SSH and demands rsync-service
+credentials, so wrap it in a shell command):
+
+```bash
+rsync -aR --exclude __pycache__ --rsync-path="mkdir -p /volume1/docker/second-brain-mcp/app && rsync" pyproject.toml uv.lock src deploy blacknas.local:/volume1/docker/second-brain-mcp/app/
+```
+
+```bash
+ssh blacknas.local 'cd /volume1/docker/second-brain-mcp && /usr/local/bin/docker compose --env-file .env -f app/deploy/compose.yaml -p second-brain-mcp up -d --build'
+```
+
+### Connecting clients
+
+**claude.ai, Desktop, Android, iOS** — add it once on the web, and the apps pick it up:
+
+1. claude.ai → Customize → Connectors → **+** → *Add custom connector*.
+2. URL `https://brain.mergoth.synology.me:1986/mcp`. Leave *Advanced settings* empty — Claude
+   registers itself (DCR).
+3. *Connect* opens the server's sign-in page. Enter `MCP_OWNER_PASSWORD`; you are sent back to
+   Claude. Get the passphrase with
+   `ssh blacknas.local 'grep ^MCP_OWNER_PASSWORD= /volume1/docker/second-brain-mcp/.env'`.
+
+**Claude Code** — sends the static bearer as a header, no sign-in:
+
+```bash
+claude mcp add --transport http second-brain https://brain.mergoth.synology.me:1986/mcp --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+```
+
+**Revoke everything** (lost phone, leaked passphrase): change `MCP_OWNER_PASSWORD` in `.env`,
+delete `state/oauth-state.json`, recreate the container. Every client must sign in again.
+
+### What remains
+
+1. Switch `HOST_VAULT_PATH` to the real vault once the sandbox has earned trust. Turn on a Btrfs
+   snapshot schedule for the `homes` share first — the real vault has no git and no snapshots.
+2. Add the connector in claude.ai and use it from Android.
 
 ### On auth
 
-`docs/initial_spec.md` assumed custom connectors require OAuth 2.1 with dynamic client
-registration. That is out of date: **DCR is deprecated** in the current MCP spec (Client ID
-Metadata Documents replace it), and static bearer tokens are first-class on Anthropic's MCP client
-surfaces. So this ships a static bearer.
-
-The honest caveat: that is evidence about Anthropic's *API* surfaces. Whether the claude.ai
-**custom connector UI** accepts a static bearer is a product question that needs a live test. If it
-turns out to demand OAuth, `auth.py` is the only module that changes — transport and auth are
-confined to the entrypoint by `factory/adr/0003`.
+`docs/initial_spec.md` assumed custom connectors need OAuth, and ADR-0003 bet on a static bearer
+instead. Anthropic's connector docs settled it (see `factory/adr/0004`): on personal plans a
+custom connector authenticates with OAuth or not at all; fixed request headers are an
+Owner-only beta for some organizations. So the HTTP entrypoint runs a single-owner OAuth server
+(`oauth.py`) on top of the MCP SDK's protocol handlers, and keeps the static bearer for Claude
+Code. Transport and auth are still confined to the entrypoint (ADR-0003).
 
 ## Known limitations
 
-- The container image is unbuilt and unverified.
-- RFC 9728 metadata URLs are hardcoded defaults (see Deployment step 1).
+- Verified end to end through the public URL, including the full OAuth flow (DCR, sign-in, code
+  exchange, refresh rotation). Not yet exercised by claude.ai itself.
+- No token revocation endpoint: MCP SDK 2.0.0's revocation handler rejects public clients.
+  Access tokens expire in an hour; revoke-all is deleting the state file (above).
 - `list_notes(since)` filters on filesystem mtime, which on a Synology-synced folder is sync time,
   not edit time. The vault's `CLAUDE.md` says `created:` in frontmatter is the real recency anchor.
 - No end-to-end test drives a JSON-RPC tool call over HTTP; tools are covered over stdio and via

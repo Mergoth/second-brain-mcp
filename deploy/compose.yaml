@@ -3,16 +3,34 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # Must match the vault owner, or writes to the mode-600 files fail with EACCES.
+        UID: ${VAULT_UID:?Set VAULT_UID to the uid owning the vault}
+        GID: ${VAULT_GID:?Set VAULT_GID to the gid owning the vault}
+    image: second-brain-mcp:latest
+    container_name: second-brain-mcp
     ports:
-      - "127.0.0.1:8000:8000"
+      # Loopback by default: the reverse proxy is the only thing that should reach it.
+      - "${MCP_BIND:-127.0.0.1}:${MCP_PUBLISH_PORT:-8765}:8000"
     environment:
       - VAULT_PATH=/vault
-      - MCP_AUTH_TOKEN
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?Set MCP_AUTH_TOKEN}
+      - MCP_RESOURCE_URL=${MCP_RESOURCE_URL:?Set MCP_RESOURCE_URL to the MCP URL clients enter, /mcp included}
+      - MCP_ISSUER_URL=${MCP_ISSUER_URL:-}
+      # Set to enable the owner OAuth server (claude.ai connectors). Empty = static bearer only.
+      - MCP_OWNER_PASSWORD=${MCP_OWNER_PASSWORD:-}
+      - MCP_STATE_DIR=/state
     volumes:
       - type: bind
         source: ${HOST_VAULT_PATH:?Set HOST_VAULT_PATH to the Obsidian vault directory}
         target: /vault
+      # OAuth clients and token digests. Deliberately outside the vault: never synced.
+      - type: bind
+        source: ${HOST_STATE_PATH:?Set HOST_STATE_PATH to a private directory for OAuth state}
+        target: /state
     read_only: true
     tmpfs:
       - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
