@@ -90,7 +90,7 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
         self,
         *,
         owner_password: str,
-        static_token: str,
+        static_token: str | None,
         resource_url: str,
         issuer_url: str,
         state_dir: Path,
@@ -99,7 +99,7 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
         if not state_dir.is_dir():
             raise ConfigError(f"MCP_STATE_DIR={str(state_dir)!r} is not a directory")
         self._password = owner_password.encode()
-        self._static = static_token.encode()
+        self._static = static_token.encode() if static_token else None
         self._resource = _normalize(resource_url)
         self._issuer = _normalize(issuer_url)
         self._state_path = state_dir / "oauth-state.json"
@@ -115,6 +115,9 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
         self._clients: dict[str, OAuthClientInformationFull] = {}
         self._access: dict[str, dict[str, Any]] = {}
         self._refresh: dict[str, dict[str, Any]] = {}
+        # Digests of refresh tokens already spent, kept until they would have expired so a
+        # replay is still recognised as reuse rather than as an unknown token (ADR-0005).
+        self._consumed: dict[str, dict[str, Any]] = {}
         self._load()
 
     # ---- persistence -------------------------------------------------------------------
@@ -132,11 +135,13 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
             raise ConfigError(f"cannot read OAuth state {self._state_path}: {exc}") from exc
         self._access = state.get("access", {})
         self._refresh = state.get("refresh", {})
+        self._consumed = state.get("consumed", {})
 
     def _save(self) -> None:
         now = time.time()
         self._access = {d: r for d, r in self._access.items() if r["expires_at"] > now}
         self._refresh = {d: r for d, r in self._refresh.items() if r["expires_at"] > now}
+        self._consumed = {d: r for d, r in self._consumed.items() if r["expires_at"] > now}
         state = {
             "clients": {
                 cid: info.model_dump(mode="json", exclude_none=True)
@@ -144,6 +149,7 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
             },
             "access": self._access,
             "refresh": self._refresh,
+            "consumed": self._consumed,
         }
         # Same atomic-write rule as the vault: temp file in the same directory, then replace.
         fd, tmp = tempfile.mkstemp(dir=self._state_path.parent, prefix=".oauth-state-")
@@ -274,8 +280,14 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> RefreshToken | None:
-        record = self._refresh.get(_digest(refresh_token))
-        if record is None or record["client_id"] != client.client_id:
+        digest = _digest(refresh_token)
+        record = self._refresh.get(digest)
+        if record is None:
+            # Reuse detection has to live here: the SDK rejects the grant as soon as this
+            # returns None, so exchange_refresh_token would never see the replay.
+            self._detect_reuse(digest)
+            return None
+        if record["client_id"] != client.client_id:
             return None
         return RefreshToken(
             token=refresh_token,
@@ -292,20 +304,46 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
         digest = _digest(refresh_token.token)
         record = self._refresh.pop(digest, None)
         if record is None:
+            self._detect_reuse(digest)
             raise TokenError("invalid_grant", "refresh token already used")
+        family = record.get("family")
+        self._consumed[digest] = {"family": family, "expires_at": record["expires_at"]}
         self._drop_access_minted_by(digest)
         assert client.client_id is not None
-        return self._issue(client.client_id, scopes, record.get("resource"))
+        return self._issue(client.client_id, scopes, record.get("resource"), family=family)
 
-    def _issue(self, client_id: str, scopes: list[str], resource: str | None) -> OAuthToken:
+    def _detect_reuse(self, digest: str) -> None:
+        """A refresh token presented after it was spent means the chain is compromised.
+
+        Rotation alone only fails the slower of the two holders; whoever redeemed first keeps
+        a live pair. RFC 9700 requires the reuse signal to revoke every descendant, so the
+        owner's next call fails and a real sign-in is needed (ADR-0005).
+        """
+        spent = self._consumed.pop(digest, None)
+        if spent is None:
+            return
+        family = spent.get("family")
+        log.warning("refresh token reuse detected; revoking token family")
+        if family:
+            self._refresh = {d: r for d, r in self._refresh.items() if r.get("family") != family}
+            self._access = {d: r for d, r in self._access.items() if r.get("family") != family}
+            self._consumed = {d: r for d, r in self._consumed.items() if r.get("family") != family}
+        self._save()
+
+    def _issue(
+        self, client_id: str, scopes: list[str], resource: str | None, family: str | None = None
+    ) -> OAuthToken:
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         now = int(time.time())
+        # One family per sign-in, carried across every rotation, so reuse can revoke the chain.
+        family = family or secrets.token_urlsafe(16)
         refresh_digest = _digest(refresh)
         self._refresh[refresh_digest] = {
             "client_id": client_id,
             "scopes": scopes,
             "expires_at": now + REFRESH_TTL,
             "resource": resource,
+            "family": family,
         }
         self._access[_digest(access)] = {
             "client_id": client_id,
@@ -313,6 +351,7 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
             "expires_at": now + ACCESS_TTL,
             "resource": resource,
             "refresh": refresh_digest,
+            "family": family,
         }
         self._save()
         return OAuthToken(
@@ -327,8 +366,15 @@ class OwnerOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Ref
         self._access = {d: r for d, r in self._access.items() if r.get("refresh") != refresh_digest}
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        if hmac.compare_digest(token.encode(), self._static):
-            return AccessToken(token=token, client_id=STATIC_CLIENT_ID, scopes=[SCOPE])
+        if self._static is not None and hmac.compare_digest(token.encode(), self._static):
+            # Audience-bound like every other token: the MCP spec requires servers to reject
+            # tokens not issued for them, and the static bearer is not exempt (ADR-0005).
+            return AccessToken(
+                token=token,
+                client_id=STATIC_CLIENT_ID,
+                scopes=[SCOPE],
+                resource=self._resource,
+            )
         record = self._access.get(_digest(token))
         if record is None or record["expires_at"] < time.time():
             return None

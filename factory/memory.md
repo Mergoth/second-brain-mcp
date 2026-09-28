@@ -9,6 +9,8 @@ Rules for whoever writes here:
 - keep under ~40 lines. when it grows past that, merge and cut.
 - conventions and commands do NOT go here - those belong in `context.md`.
 
+- a custom connector is called from Anthropic's cloud, not the user's device - true on claude.ai, Desktop AND mobile. So tailnet/VPN-only hosting cannot work at any tier, and public reachability is a requirement rather than a deployment style. Their egress ranges are published and worth allowlisting
+- refresh-token reuse detection has to sit in `load_refresh_token`: returning None there makes the SDK reject the grant, so `exchange_refresh_token` never sees a replay and a check placed there is dead code
 - claude.ai custom connectors on personal plans = OAuth (DCR/CIMD) or authless only; static bearer headers are an org-Owner beta. Read claude.com/docs/connectors/building/authentication before betting on an auth mode again
 - MCP SDK 2.0.0 RevocationRequest makes client_secret required, so public clients (Claude) get 400 on /revoke; the SDK's own suite misses it. Revocation is left unadvertised
 - Synology: files under /volume1 inherit ACLs that override umask (a "600" .env came out 777+); chmod after creating secrets and check with ls. Bare `rsync` over SSH is intercepted by DSM and fails auth; wrap it via --rsync-path="sh-cmd && rsync"

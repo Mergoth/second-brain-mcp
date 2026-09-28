@@ -86,13 +86,14 @@ def _http_settings(env: dict[str, str] | None = None) -> HttpSettings:
     return HttpSettings(host, port, resource_url, issuer_url, owner_password, state_dir)
 
 
-def build_http_server(token: str, http: HttpSettings) -> "MCPServer":
-    """Wire auth onto the server: static bearer only, or static bearer plus owner OAuth."""
+def build_http_server(token: str | None, http: HttpSettings) -> "MCPServer":
+    """Wire auth onto the server: static bearer only, or owner OAuth with an optional bearer."""
     from second_brain_mcp.metadata import build_auth_settings
 
     if http.owner_password is None:
         from second_brain_mcp.auth import StaticBearerVerifier
 
+        assert token is not None  # resolve_static_token guarantees this without OAuth
         return create_server(
             token_verifier=StaticBearerVerifier(token),
             auth=build_auth_settings(resource_url=http.resource_url, issuer_url=http.issuer_url),
@@ -141,10 +142,11 @@ def main(argv: list[str] | None = None) -> None:
         server.run(transport="stdio")
     else:
         # Lazy imports — auth is only needed for HTTP (ADR-0003).
-        from second_brain_mcp.auth import require_auth_token
+        from second_brain_mcp.auth import resolve_static_token
 
         http = _http_settings()
-        server = build_http_server(require_auth_token(), http)
+        token = resolve_static_token(oauth_enabled=http.owner_password is not None)
+        server = build_http_server(token, http)
         server.run(
             transport="streamable-http",
             host=http.host,

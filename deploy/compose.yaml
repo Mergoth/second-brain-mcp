@@ -14,7 +14,9 @@ services:
       - "${MCP_BIND:-127.0.0.1}:${MCP_PUBLISH_PORT:-8765}:8000"
     environment:
       - VAULT_PATH=/vault
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?Set MCP_AUTH_TOKEN}
+      # Optional when MCP_OWNER_PASSWORD is set; unset means OAuth is the only way in.
+      # The app refuses to start if both are missing.
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}
       - MCP_RESOURCE_URL=${MCP_RESOURCE_URL:?Set MCP_RESOURCE_URL to the MCP URL clients enter, /mcp included}
       - MCP_ISSUER_URL=${MCP_ISSUER_URL:-}
       # Set to enable the owner OAuth server (claude.ai connectors). Empty = static bearer only.

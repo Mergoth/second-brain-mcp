@@ -24,6 +24,22 @@ def require_auth_token() -> str:
     return token
 
 
+def resolve_static_token(*, oauth_enabled: bool) -> str | None:
+    """Return the static bearer, or None when OAuth alone is enough (ADR-0005).
+
+    The static token never expires and cannot be rotated, so it is the weakest credential
+    the server accepts. Once the owner OAuth server is running it is optional: leaving
+    MCP_AUTH_TOKEN unset drops the standing bearer entirely. Without OAuth it remains the
+    only way in, so it stays mandatory.
+    """
+    token = os.environ.get("MCP_AUTH_TOKEN")
+    if token:
+        return token
+    if oauth_enabled:
+        return None
+    raise ConfigError("MCP_AUTH_TOKEN is not set — HTTP transport refuses to start")
+
+
 class StaticBearerVerifier(TokenVerifier):
     """Verify bearer tokens against a static secret using constant-time comparison."""
 

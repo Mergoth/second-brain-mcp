@@ -65,7 +65,7 @@ All configuration is environment variables.
 | Variable | Required for | Notes |
 |---|---|---|
 | `VAULT_PATH` | always | Absolute path to the vault root. Resolved and frozen at startup; never re-read. No default. |
-| `MCP_AUTH_TOKEN` | `--transport http` | Static bearer token. Compared with `hmac.compare_digest`. No default. |
+| `MCP_AUTH_TOKEN` | `--transport http` without OAuth | Static bearer token. Compared with `hmac.compare_digest`. No default. **Optional once `MCP_OWNER_PASSWORD` is set** — leave it unset to drop the standing bearer and make OAuth the only way in (ADR-0005). It never expires and cannot be rotated, so it is the weakest credential the server accepts. |
 | `MCP_HOST` / `MCP_PORT` | `--transport http` | Bind address. Default `127.0.0.1:8000`; the image sets `0.0.0.0`. |
 | `MCP_RESOURCE_URL` | `--transport http` off loopback | The MCP URL exactly as clients enter it, `/mcp` included — claude.ai requires the metadata `resource` to match. Defaults to the bind address only on loopback; otherwise the server refuses to start without it. |
 | `MCP_ISSUER_URL` | optional | Authorization server URL. Defaults to the origin of `MCP_RESOURCE_URL`. |

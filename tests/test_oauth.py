@@ -304,3 +304,100 @@ def test_missing_state_dir_refuses_to_start(tmp_path: Path) -> None:
             issuer_url=BASE,
             state_dir=tmp_path / "does-not-exist",
         )
+
+
+# ---- refresh-token reuse (RFC 9700) ------------------------------------------------------
+
+
+def _refresh_grant(c: TestClient, client_id: str, refresh_token: str):
+    return c.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        },
+    )
+
+
+def test_refresh_reuse_revokes_the_whole_family(client: TestClient) -> None:
+    """A replayed refresh token kills the chain it belongs to, not just itself.
+
+    Rotation alone leaves the thief holding a live pair: whoever redeems the stolen token
+    first wins, and the loser's replay is the only thing that fails. RFC 9700 says the
+    reuse signal must revoke every descendant.
+    """
+    client_id, first = _sign_in(client)
+    rotated = _refresh_grant(client, client_id, first["refresh_token"])
+    assert rotated.status_code == 200, rotated.text
+    second = rotated.json()
+
+    replayed = _refresh_grant(client, client_id, first["refresh_token"])
+    assert replayed.status_code == 400
+    assert replayed.json()["error"] == "invalid_grant"
+
+    # Everything minted from the replayed token dies with it.
+    assert _initialize(client, second["access_token"]).status_code == 401
+    assert _refresh_grant(client, client_id, second["refresh_token"]).status_code == 400
+
+
+def test_reuse_revocation_survives_a_restart(client: TestClient, state_dir: Path) -> None:
+    client_id, first = _sign_in(client)
+    second = _refresh_grant(client, client_id, first["refresh_token"]).json()
+    assert _refresh_grant(client, client_id, first["refresh_token"]).status_code == 400
+
+    restarted = OwnerOAuthProvider(
+        owner_password=PASSWORD,
+        static_token=STATIC,
+        resource_url=RESOURCE,
+        issuer_url=BASE,
+        state_dir=state_dir,
+    )
+    assert asyncio.run(restarted.load_access_token(second["access_token"])) is None
+
+
+# ---- the static bearer -------------------------------------------------------------------
+
+
+def test_static_bearer_is_bound_to_this_resource(state_dir: Path) -> None:
+    """The static token must carry the same audience every OAuth token is checked against.
+
+    Returning it with resource=None exempts it from the audience validation the MCP spec
+    requires of every other token this server accepts.
+    """
+    provider = OwnerOAuthProvider(
+        owner_password=PASSWORD,
+        static_token=STATIC,
+        resource_url=RESOURCE,
+        issuer_url=BASE,
+        state_dir=state_dir,
+    )
+    granted = asyncio.run(provider.load_access_token(STATIC))
+    assert granted is not None
+    assert granted.resource == RESOURCE
+
+
+def test_oauth_works_with_no_static_token_at_all(state_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OwnerOAuthProvider.__init__, "__kwdefaults__", {"failure_delay": 0.0})
+    http = HttpSettings("127.0.0.1", 8000, RESOURCE, BASE, PASSWORD, state_dir)
+    app = build_http_server(None, http).streamable_http_app()
+    with TestClient(app, base_url=BASE, follow_redirects=False) as c:
+        _, tokens = _sign_in(c)
+        assert _initialize(c, tokens["access_token"]).status_code == 200
+        assert _initialize(c, STATIC).status_code == 401
+
+
+def test_static_token_is_optional_once_oauth_is_enabled(monkeypatch) -> None:
+    from second_brain_mcp.auth import resolve_static_token
+
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    assert resolve_static_token(oauth_enabled=True) is None
+
+
+def test_static_token_is_still_required_without_oauth(monkeypatch) -> None:
+    from second_brain_mcp.auth import resolve_static_token
+    from second_brain_mcp.errors import ConfigError
+
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    with pytest.raises(ConfigError, match="MCP_AUTH_TOKEN"):
+        resolve_static_token(oauth_enabled=False)
